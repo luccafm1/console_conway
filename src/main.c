@@ -11,9 +11,9 @@ int main(void){
     cw_grid *my_grid = cw_grid__init(50, 50);
 
     cw_grid__draw_pattern(my_grid, 10, 10, 
-        L" █ " "\n"
-        L"  █" "\n"
-        L"███" "\n"
+        L" O " "\n"
+        L"  O" "\n"
+        L"OOO" "\n"
     );
 
     size_t generation_c = 0;
@@ -29,11 +29,11 @@ int main(void){
 
         population_c = cw_grid__fetch_alive(*my_grid);
 
-        fwprintf_s(stdout, L"Generation: %d\n", generation_c);
-        fwprintf_s(stdout, L"Population: %d\n", population_c);
+        fprintf_s(stdout, "Generation: %d \n", generation_c);
+        fprintf_s(stdout, "Population: %d \n", population_c);
 
-        fwprintf_s(stdout, L"\n[SPACE]  | pause/unpause\n");
-        fwprintf_s(stdout, L"[ESCAPE] | quit\n");
+        fprintf_s(stdout, "\n[SPACE]  | pause/unpause\n");
+        fprintf_s(stdout, "[ESCAPE] | quit\n");
 
         cw_game__update(my_grid);
 

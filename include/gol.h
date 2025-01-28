@@ -9,8 +9,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>    // wchar_t
+#include <windows.h>    
 #include <stdbool.h>
+#include <time.h>
 
 
 
@@ -26,10 +27,16 @@
 #define CW_WHOME (wchar_t*) L"\x1b[H"
 #define CW_WRESET (wchar_t*) L"\x1b[0m"
 #define CW_STATIC__DEF static
-#define CW_CELL_COLOR__DEAD (COLORREF)RGB(255.0f, 255.0f, 255.0f)
-#define CW_CELL_COLOR__ALIVE (COLORREF)RGB(0.0f, 0.0f, 0.0f)
+#define CW_CELL_COLOR__DEAD  (COLORREF)RGB(255.0f, 255.0f, 255.0f)
+#ifdef CW_CELL__CHECKER
+#define CW_CELL_COLOR__DEAD_A (COLORREF)RGB(255.0f, 255.0f, 255.0f)
+#define CW_CELL_COLOR__DEAD_B (COLORREF)RGB(GetRValue(CW_CELL_COLOR__DEAD_A) - 15.0f, \
+                                            GetGValue(CW_CELL_COLOR__DEAD_A) - 15.0f, \
+                                            GetBValue(CW_CELL_COLOR__DEAD_A) - 15.0f)
+#endif
+#define CW_CELL_COLOR__ALIVE (COLORREF)RGB(0.0f, 0.0f, 0.0f) 
 #define CW_CELL_COLOR__MOUSE (COLORREF)RGB(190.0f, 190.0f, 190.0f)
-#define CW_TICK_SPEED 50//ms
+#define CW_TICK_SPEED (clock_t)25//ms
 
 #define CW_WNEWL L'\n'
 
@@ -55,9 +62,10 @@ typedef struct cw_grid_t {
     int width;
     int height;
     int **cells; 
-} cw_grid;
+    int gen;
+} cw_grid, *cw_grid__ptr;
 
-cw_grid *cw_grid__init(int width, int height) {
+cw_grid__ptr cw_grid__init(int width, int height) {
     cw_grid *g = malloc(sizeof(cw_grid));
     
     g->width = width;
@@ -71,6 +79,8 @@ cw_grid *cw_grid__init(int width, int height) {
         }
     }
 
+    g->gen = 0;
+
     ////////////////////////////////////////////////////////
     cw_handler__console = GetStdHandle(STD_OUTPUT_HANDLE);
     HANDLE handler_input = GetStdHandle(STD_INPUT_HANDLE);
@@ -80,6 +90,22 @@ cw_grid *cw_grid__init(int width, int height) {
     ////////////////////////////////////////////////////////
 
     return g;
+}
+
+void cw_grid__free(cw_grid__ptr g){
+    for (int i = 0; i < g->height; i++){
+        free(g->cells[i]);
+    }
+    free(g->cells);
+    free(g);
+}
+
+void cw_grid__clear(cw_grid__ptr g){
+    for (int i = 0; i < g->height; i++){
+        for (int j = 0; j < g->width; j++){
+            g->cells[i][j] = DEAD;
+        }
+    }
 }
 
 /////////////////////////////////
@@ -128,58 +154,59 @@ int cw_grid__fetch_alive(cw_grid g){
         }
     }
     return live_count;
-}
+}                 
 
-CW_STATIC__DEF bool cw_game__rule_underpopulation(cw_grid g, int *adj, int alive_c, int g_x, int g_y){
+CW_STATIC__DEF void cw_game__rule_underpopulation(cw_grid g, int **tmp, int *adj, int alive_c, int g_x, int g_y){
     // 1. Any live cell with fewer than two live neighbours dies, 
     // as if by underpopulation.
-    if (g.cells[g_y][g_x] == DEAD) return false;
-    return (alive_c < 2);
+    if (g.cells[g_y][g_x] == DEAD) return;
+    if (alive_c < 2) tmp[g_y][g_x] = DEAD;
 }
-CW_STATIC__DEF bool cw_game__rule_survival(cw_grid g, int *adj, int alive_c, int g_x, int g_y){
-    // 2. Any live cell with two or three live neighbours lives on 
+CW_STATIC__DEF void cw_game__rule_survival(cw_grid g, int **tmp, int *adj, int alive_c, int g_x, int g_y){
+    // 2. Any live cell with two or three live neighbours lives on
     // to the next generation.
-    if (g.cells[g_y][g_x] == DEAD) return false;
-    return (alive_c == 2 || alive_c == 3);
+    if (g.cells[g_y][g_x] == DEAD) return;
+    if (alive_c == 2 || alive_c == 3) tmp[g_y][g_x] = ALIVE;
 }
-CW_STATIC__DEF bool cw_game__rule_overpopulation(cw_grid g, int *adj, int alive_c, int g_x, int g_y){
+CW_STATIC__DEF void cw_game__rule_overpopulation(cw_grid g, int **tmp, int *adj, int alive_c, int g_x, int g_y){
     // 3. Any live cell with more than three live neighbours dies, 
     // as if by overpopulation.
-    if (g.cells[g_y][g_x] == DEAD) return false;
-    return (alive_c > 3);
+    if (g.cells[g_y][g_x] == DEAD) return;
+    if (alive_c > 3) tmp[g_y][g_x] = DEAD;
 }
-CW_STATIC__DEF bool cw_game__rule_reproduction(cw_grid g, int *adj, int alive_c, int g_x, int g_y){
+CW_STATIC__DEF void cw_game__rule_reproduction(cw_grid g, int **tmp, int *adj, int alive_c, int g_x, int g_y){
     // 4. Any dead cell with exactly three live neighbours becomes a
     // live cell, as if by reproduction.
-    if (g.cells[g_y][g_x] == ALIVE) return false;
-    return (alive_c == 3);
+    if (g.cells[g_y][g_x] == ALIVE) return;
+    if (alive_c == 3) tmp[g_y][g_x] = ALIVE;
 }
 
 /////////////////////////////////
 // event handling
 
-CW_STATIC__DEF void cw_mouse__press_left(cw_grid *g){
+CW_STATIC__DEF void cw_mouse__press_left(cw_grid__ptr g){
     if (cw_mouse__position_x < 0 || cw_mouse__position_x >= g->width)  return;
     if (cw_mouse__position_y < 0 || cw_mouse__position_y >= g->height) return;
 
     g->cells[cw_mouse__position_y][cw_mouse__position_x] = ALIVE;
 }
 
-CW_STATIC__DEF void cw_mouse__press_right(cw_grid *g){
+CW_STATIC__DEF void cw_mouse__press_right(cw_grid__ptr g){
     if (cw_mouse__position_x < 0 || cw_mouse__position_x >= g->width)  return;
     if (cw_mouse__position_y < 0 || cw_mouse__position_y >= g->height) return;
 
     g->cells[cw_mouse__position_y][cw_mouse__position_x] = DEAD;
 }
 
-CW_STATIC__DEF void cw_key__press(KEY_EVENT_RECORD ker){
+CW_STATIC__DEF void cw_key__press(KEY_EVENT_RECORD ker, cw_grid__ptr g){
     switch (ker.wVirtualKeyCode) {
-        case VK_SPACE: paused = !paused; break;
-        case VK_ESCAPE: running = false; break;
+        case VK_SPACE: paused = !paused;  break;
+        case VK_ESCAPE: running = false;  break;    
+        case VK_BACK: cw_grid__clear(g);  break;
     }
 }
 
-void cw_input_handle__update(cw_grid *g){
+void cw_input_handle__update(cw_grid__ptr g){
     DWORD numEvents = 0;
     HANDLE hInput = GetStdHandle(STD_INPUT_HANDLE);
     GetNumberOfConsoleInputEvents(hInput, &numEvents);
@@ -191,8 +218,8 @@ void cw_input_handle__update(cw_grid *g){
         DWORD numRead = 0;
         ReadConsoleInput(hInput, inBuffer, numEvents, &numRead);
         // For each event in the console input buffer, we'll need to read and process it.
-        // Most events will be mouse movements, but we should be prepared to handle other
-        // types of input events as well.
+        // The mouse events allow for dragging + clicking both left & right mouse buttons,
+        // while the keyboard events allow for handling any key press we want.
         for (DWORD i = 0; i < numRead; i++) {
             if (inBuffer[i].EventType == MOUSE_EVENT) {
                 MOUSE_EVENT_RECORD mer = inBuffer[i].Event.MouseEvent;
@@ -210,7 +237,7 @@ void cw_input_handle__update(cw_grid *g){
                 KEY_EVENT_RECORD ker = inBuffer[i].Event.KeyEvent;
 
                 if (ker.bKeyDown) {
-                    cw_key__press(ker);
+                    cw_key__press(ker, g);
                 }
             }
         }
@@ -234,7 +261,15 @@ void *cw_grid__render(cw_grid g){
     for (int y = 0; y < g.height; y++){
         for (int x = 0; x < g.width; x++){
             COLORREF color;
-            if (g.cells[y][x] == DEAD) color = CW_CELL_COLOR__DEAD;
+#ifdef CW_CELL__CHECKER
+            // if x and y are both even or both odd, the XOR will be 0, and the checkerboard 
+            // pattern will be consistent. If one is even and the other is odd, the XOR will 
+            // be 1, and the checkerboard pattern will be alternating.
+            bool checker = (x ^ y) & 1;
+            if (g.cells[y][x] == DEAD)  color = checker ? CW_CELL_COLOR__DEAD_A : CW_CELL_COLOR__DEAD_B;
+#else
+            if (g.cells[y][x] == DEAD)  color = CW_CELL_COLOR__DEAD;
+#endif
             if (g.cells[y][x] == ALIVE) color = CW_CELL_COLOR__ALIVE;
             ///////////////////////////////////////////////////////////////////////////////////////////////
             if ((x == cw_mouse__position_x) && (y == cw_mouse__position_y)) color = CW_CELL_COLOR__MOUSE;
@@ -260,7 +295,20 @@ void *cw_grid__render(cw_grid g){
 /////////////////////////////////
 // update loops & stuff
 
-int cw_game__update(cw_grid *g){
+bool cw_game__update__check_delay(clock_t delay){
+    static clock_t last = 0;
+    clock_t current = clock();
+    clock_t delta = current - last;
+    // Confirm whether enough time has passed inbetween steps/updates in order to pass
+    // to the next gen.
+    bool check = delta > (CLOCKS_PER_SEC / delay);
+    
+    if (check) last = current;
+    return !check;
+}
+
+int cw_game__update(cw_grid__ptr g){
+    if (cw_game__update__check_delay(CW_TICK_SPEED) || paused) return 1;
     // Conway's game of life must not be run sequentially --- the whole point is to make
     // all rules be applied simultaneously to all cells. In other words, we need a buffer
     // for the cell updates.
@@ -277,9 +325,10 @@ int cw_game__update(cw_grid *g){
             if (adj == NULL) continue;
             int alive_c = cw_cell__fetch_adjacent__alive(*g, adj);
 
-            if (cw_game__rule_underpopulation(*g, adj, alive_c, x, y)) new[y][x] = DEAD;
-            if (cw_game__rule_overpopulation(*g, adj, alive_c,x, y)) new[y][x]   = DEAD;
-            if (cw_game__rule_reproduction(*g, adj,alive_c, x, y)) new[y][x]     = ALIVE;
+            cw_game__rule_underpopulation(*g, new, adj, alive_c, x, y);
+            cw_game__rule_survival(*g, new, adj, alive_c, x, y);
+            cw_game__rule_overpopulation(*g, new, adj, alive_c,x, y);
+            cw_game__rule_reproduction(*g, new, adj,alive_c, x, y);
 
             free(adj);
         }
@@ -291,17 +340,18 @@ int cw_game__update(cw_grid *g){
         free(new[i]);
     }
     free(new);
+    g->gen++;
 }
 
 /////////////////////////////////
 // helpers for drawing patterns
 
-void cw_grid__draw_alive(cw_grid *g, int x, int y){
+void cw_grid__draw_alive(cw_grid__ptr g, int x, int y){
     if (x < 0 || x >= g->width || y < 0 || y >= g->height) return;
     g->cells[y][x] = ALIVE;
 }
 
-void cw_grid__draw_pattern(cw_grid *g, int x, int y, const wchar_t *pattern) {
+void cw_grid__draw_pattern(cw_grid__ptr g, int x, int y, const wchar_t *pattern) {
     int curr_x = 0;
     int curr_y = 0;
     // Run through all wide-chars of the wide-string and construct a pattern,
